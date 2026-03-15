@@ -1,0 +1,72 @@
+jenkins:
+  systemMessage: "M1 DevSecOps Pipeline - Auto Configured via JCasC"
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+credentials:
+  system:
+    domainCredentials:
+      - credentials:
+          - usernamePassword:
+              scope: GLOBAL
+              id: "dockerhub-creds"
+              username: "${DOCKER_HUB_USER}"
+              password: "${DOCKER_HUB_PASS}"
+          - basicSSHUserPrivateKey:
+              scope: GLOBAL
+              id: "ec2-ssh-key"
+              username: "ubuntu"
+              privateKeySource:
+                directEntry:
+                  privateKey: "${EC2_SSH_PRIVATE_KEY}"
+          - string:
+              scope: GLOBAL
+              id: "sonarqube-token"
+              secret: "${SONARQUBE_TOKEN}"
+
+tool:
+  sonarRunnerInstallation:
+    installations:
+      - name: "SonarScanner"
+        properties:
+          - installSource:
+              installers:
+                - sonarRunnerInstaller:
+                    id: "5.0.1.3006"
+
+unclassified:
+  sonarGlobalConfiguration:
+    buildWrapperEnabled: true
+    installations:
+      - name: "SonarQube"
+        serverUrl: "http://localhost:9000"
+        credentialsId: "sonarqube-token"
+
+jobs:
+  - script: |
+      pipelineJob('M1-DevSecOps-Pipeline') {
+        definition {
+          cpsScm {
+            scm {
+              git {
+                remote {
+                  url('https://github.com/YOURUSERNAME/m1-devsecops.git')
+                }
+                branches('*/main')
+              }
+            }
+            scriptPath('Jenkinsfile')
+          }
+        }
+        triggers {
+          githubPush()
+        }
+      }

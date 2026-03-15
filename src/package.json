@@ -1,0 +1,7 @@
+{
+  "name": "m1-app",
+  "version": "1.0.0",
+  "description": "M1 DevSecOps Sample App",
+  "main": "index.js",
+  "scripts": { "start": "node index.js" }
+}
