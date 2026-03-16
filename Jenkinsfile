@@ -24,22 +24,23 @@ pipeline {
 
     stage('3 - Security Scans') {
       parallel {
-
         stage('3A - Trivy') {
-          steps {
-            sh """
-              trivy image \
-                --format json \
-                --output trivy-report.json \
-                --exit-code 0 \
-                --severity CRITICAL,HIGH \
-                ${IMAGE_NAME}:${BUILD_NUMBER}
-            """
-          }
-          post {
-            always { archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true }
-          }
-        }
+  steps {
+    sh """
+      TRIVY_CONFIG=/dev/null trivy image \
+        --format json \
+        --output trivy-report.json \
+        --exit-code 0 \
+        --severity CRITICAL,HIGH \
+        ${IMAGE_NAME}:${BUILD_NUMBER}
+    """
+  }
+  post {
+    always { archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true }
+  }
+}
+
+        
 
         stage('3B - OWASP DC') {
           steps {
