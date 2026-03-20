@@ -21,13 +21,12 @@ pipeline {
         echo "Image built: ${IMAGE_NAME}:${BUILD_NUMBER}"
       }
     }
-
-    stage('3 - Security Scans') {
-      parallel {
-        stage('3A - Trivy') {
+stage('3A - Trivy') {
   steps {
     sh """
+      rm -f trivy.yaml
       TRIVY_CONFIG=/dev/null trivy image \
+        --cache-dir /tmp/trivy-cache \
         --format json \
         --output trivy-report.json \
         --exit-code 0 \
@@ -39,7 +38,6 @@ pipeline {
     always { archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true }
   }
 }
-
         
 
         stage('3B - OWASP DC') {
