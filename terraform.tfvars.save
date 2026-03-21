@@ -1,0 +1,61 @@
+aws_region           = "ap-south-1"
+key_pair_name        = "m1-key"
+docker_hub_user      = "gurusekkarreddy"
+docker_hub_pass      = "Mgsr@2869**"
+jenkins_admin_pass   = "Admin@1234"
+sonarqube_token      = "leave_blank_for_now"
+ec2_ssh_private_key  = <<EOF
+-----BEGIN RSA PRIVATE KEY-----
+
+MIIEowIBAAKCAQEAzoK2NJE8lQ+7fW95GNMdXvsc24ozcSNzCKb8ASDWR9l64vi4
+
+GOmSsgIct9eJAYbf2iGcS4c8dl4LvTtZWDlu77SJBTWWMw8yEgyTtYuqrZGgEE/q
+
+ot8aSCPABYZplS+BoYzbRBZGPXLO5P9BqbDLK+o1QV5rvvT8Yp29qzT3gkuswpYP
+
+HT6n/DLa1g/QMqQwSxANkYNwK2qbXhCDAO55dS9KdgkzlxeG9+5M/N4dKUlvZAv6
+
+8Ne1Cu83pdASvcvcBgjTof+AgCL/4sKrI/pfaoCmYoER/otPHctLXq3uAP4d9cH5
+
+UIyL51vnoJD4gozzVIChWu00s6K/kt5aPcm5vwIDAQABAoIBACdGVMDKnmr7Av1o
+
+Je/CtuNJfsOCFSZ/R3Ft0J+mTxp7EhP4mYqjYXLZU/zi0PupWwlxOvhiT+1zFWh3
+
+0RYmViLggu6qslYjnbIxEiaE2YEJIRf5Gva+15DAu9RRK+NjlZPT5h+c3N7y5sZG
+
+hYZwSTOg51/3RSacESPwPBJDkI8G3bUgnrz6L2lJXAQELyymInaZ082i0XP/8LGv
+
+jTeTJcq6u31mHolqhwieLPWPE1JzZYjJ2z8m3vEloWGLxS/D6cpXxBWIxNfzBi6P
+
+xK0HvZHHVmT89udxepkD5PITr5xCPiKJAjhkQ/Np/zavFcIIcAli/km12wvn0mrm
+
+WvdPDYECgYEA9xfyHtu7FrDQZHE4nnlq9IAM1GRyvylvdZi8QEA3plD+09ZtZdwi
+
+h/+ia6OdGUG9f7vDx4WvVFA50fAfVH/MUnYyzQtmuqxnXC5C4I6Eo3pcX2evkabj
+
+x9QKU4ECyGb2z7Z+R8lvRGHNuGrosGlxuilrxQBIDwXZGYKz9GECeKUCgYEA1fRJ
+
+fKD2APTGlarVfE37eFPMIQhzoG+2smO4182F6dw1l/nypP17ZRuuWoj8eoHc8WD7
+
+jEqUiPxXB5M+PitogGVpSF53XkuFIDjQPQL3Uukjx+B1kf9pDCqQs7ey/8+OfHw+
+
+AldUkFGssVTpbDlZSoxK7S6GKJmuvFqVaN43N5MCgYBxbd+rBMmkx/RSN5t7PFe5
+
+99Jr6dS3JolRHZVFlXU2dzYT/vpnaR+8+MAR06D5iDE6ovJj9F2hQdbZJfbr7mLY
+
+dAQsFpDJHv2v1ljDBwmiljgzX8C8BzXHdPJslOu3HXUtsyPTRog6hv9OKl25Jh6c
+
+DAm5/MAXjWK1EEgV5jahNQKBgQCQKotZ7xvUiRtGvlYb7HAGJHDn0UoYUS5KBegH
+
+gfU6H6f9P+7APg1nk79oQeXepqK6Ax986MQtidsav5yxR46i9bJ7kSvd3gVWMPIg
+
+Kl98/pudkyGlvvSJviTC9IUo2jKorw8ZhL72gBJda1neEsaX9PCH4VGFCgkz4dXL
+
+U/DhAQKBgB9Xqq++Za7cR08ccmAeH/GQE9TyB3XUbLtmG5GeiEQqYw9ClNc8jK0P
+
+t8CrMzPkAaRTP3PaOrgnoyUoyFlPojOh1tf8wi3YPlYPullWXgtiGwGJunttfiVL
+
+XfViOgOyuJBb8ZhTABph/ahXqq44zii6wl3bWG+DqITL06Zpardj
+
+-----END RSA PRIVATE KEY-----
+EOF

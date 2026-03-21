@@ -2,7 +2,6 @@ provider "aws" {
   region = var.aws_region
 }
 
-# ── VPC ──────────────────────────────────────────
 resource "aws_vpc" "m1_vpc" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
@@ -36,15 +35,34 @@ resource "aws_route_table_association" "m1_rta" {
   route_table_id = aws_route_table.m1_rt.id
 }
 
-# ── SECURITY GROUPS ───────────────────────────────
 resource "aws_security_group" "jenkins_sg" {
   name   = "m1-jenkins-sg"
   vpc_id = aws_vpc.m1_vpc.id
 
-  ingress { from_port = 8080 to_port = 8080 protocol = "tcp" cidr_blocks = ["0.0.0.0/0"] }
-  ingress { from_port = 9000 to_port = 9000 protocol = "tcp" cidr_blocks = ["0.0.0.0/0"] }
-  ingress { from_port = 22   to_port = 22   protocol = "tcp" cidr_blocks = ["0.0.0.0/0"] }
-  egress  { from_port = 0    to_port = 0    protocol = "-1"  cidr_blocks = ["0.0.0.0/0"] }
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   tags = { Name = "m1-jenkins-sg" }
 }
@@ -53,30 +71,45 @@ resource "aws_security_group" "app_sg" {
   name   = "m1-app-sg"
   vpc_id = aws_vpc.m1_vpc.id
 
-  ingress { from_port = 80  to_port = 80  protocol = "tcp" cidr_blocks = ["0.0.0.0/0"] }
-  ingress { from_port = 22  to_port = 22  protocol = "tcp"
-            security_groups = [aws_security_group.jenkins_sg.id] }
-  egress  { from_port = 0   to_port = 0   protocol = "-1"  cidr_blocks = ["0.0.0.0/0"] }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port       = 22
+    to_port         = 22
+    protocol        = "tcp"
+    security_groups = [aws_security_group.jenkins_sg.id]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
 
   tags = { Name = "m1-app-sg" }
 }
 
-# ── ELASTIC IP for Jenkins ────────────────────────
 resource "aws_eip" "jenkins_eip" {
   domain   = "vpc"
   instance = aws_instance.jenkins_ec2.id
   tags     = { Name = "m1-jenkins-eip" }
 }
 
-# ── JENKINS EC2 (t2.medium) ───────────────────────
 resource "aws_instance" "jenkins_ec2" {
-  ami                    = "ami-0f58b397bc5c1f2e8"  # Ubuntu 22.04 ap-south-1
-  instance_type          = "t2.medium"
+  ami                    = "ami-07216ac99dc46a187"
+  instance_type = "t3.micro"
   key_name               = var.key_pair_name
   subnet_id              = aws_subnet.m1_subnet.id
   vpc_security_group_ids = [aws_security_group.jenkins_sg.id]
 
-  root_block_device { volume_size = 20 }
+  root_block_device {
+    volume_size = 20
+
+  }
 
   user_data = templatefile("user_data_jenkins.sh", {
     docker_hub_user     = var.docker_hub_user
@@ -84,16 +117,16 @@ resource "aws_instance" "jenkins_ec2" {
     jenkins_admin_pass  = var.jenkins_admin_pass
     sonarqube_token     = var.sonarqube_token
     ec2_ssh_private_key = var.ec2_ssh_private_key
-    github_casc_url     = "https://raw.githubusercontent.com/YOURUSERNAME/m1-devsecops/main/jenkins-casc.yaml"
+    github_casc_url     = "https://raw.githubusercontent.com/GURUSEKKAR/m1-devsecops/main/jenkins-casc.yaml"
+    dc_version          = "9.0.9"
   })
 
   tags = { Name = "m1-jenkins" }
 }
 
-# ── APP EC2 (t2.micro - free tier) ───────────────
 resource "aws_instance" "app_ec2" {
-  ami                    = "ami-0f58b397bc5c1f2e8"  # Ubuntu 22.04 ap-south-1
-  instance_type          = "t2.micro"
+  ami                    = "ami-07216ac99dc46a187"
+  instance_type = "t3.micro"
   key_name               = var.key_pair_name
   subnet_id              = aws_subnet.m1_subnet.id
   vpc_security_group_ids = [aws_security_group.app_sg.id]
@@ -110,7 +143,6 @@ resource "aws_instance" "app_ec2" {
   tags = { Name = "m1-app" }
 }
 
-# ── OUTPUTS ───────────────────────────────────────
 output "jenkins_url" {
   value = "http://${aws_eip.jenkins_eip.public_ip}:8080"
 }

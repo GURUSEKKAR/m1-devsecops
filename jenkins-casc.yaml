@@ -58,7 +58,7 @@ jobs:
             scm {
               git {
                 remote {
-                  url('https://github.com/YOURUSERNAME/m1-devsecops.git')
+                  url('https://github.com/GURUSEKKAR/m1-devsecops.git')
                 }
                 branches('*/main')
               }

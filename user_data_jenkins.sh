@@ -35,7 +35,7 @@ apt-get install -y trivy
 
 # ── Part 4: Install OWASP Dependency Check ───────
 DC_VERSION="9.0.9"
-wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${DC_VERSION}/dependency-check-${DC_VERSION}-release.zip" \
+wget -q "https://github.com/jeremylong/DependencyCheck/releases/download/v${dc_version}/dependency-check-${dc_version}-release.zip" \
   -O /tmp/dc.zip
 unzip -q /tmp/dc.zip -d /opt/
 chmod +x /opt/dependency-check/bin/dependency-check.sh
