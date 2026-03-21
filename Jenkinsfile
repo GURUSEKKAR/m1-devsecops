@@ -3,7 +3,7 @@ pipeline {
 
   environment {
     IMAGE_NAME  = "gurusekkarreddy/m1-app"
-    APP_EC2_IP  = "65.0.85.150"   // will be filled after terraform apply
+    APP_EC2_IP  = "3.111.85.206"   // will be filled after terraform apply
   }
 
   stages {
