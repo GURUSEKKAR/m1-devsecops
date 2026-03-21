@@ -77,33 +77,127 @@ pipeline {
             }
           }
         }
-
       }
     }
+        stage('3.5 - Collect Reports') {
+      steps {
+        script {
+          def unified = [
+            pipeline: [
+              build_number: env.BUILD_NUMBER,
+              timestamp: new Date().format("yyyy-MM-dd HH:mm:ss"),
+              commit: env.GIT_COMMIT,
+              branch: env.GIT_BRANCH
+            ],
+            scanners: [:]
+          ]
+
+          // 1. Trivy
+          try {
+            unified.scanners.trivy = readJSON file: 'trivy-report.json'
+            echo "Trivy report loaded"
+          } catch (e) {
+            unified.scanners.trivy = [error: "Report not available"]
+            echo "Trivy report missing"
+          }
+
+          // 2. OWASP DC
+          try {
+            unified.scanners.owasp_dc = readJSON file: 'owasp-dc-report.json'
+            echo "OWASP DC report loaded"
+          } catch (e) {
+            unified.scanners.owasp_dc = [error: "Report not available"]
+            echo "OWASP DC report missing"
+          }
+
+          // 3. SonarQube
+          try {
+            def response = sh(
+              script: "curl -s -u ${env.SONAR_AUTH_TOKEN}: 'http://localhost:9000/api/issues/search?projectKeys=m1-app&severities=CRITICAL,MAJOR,BLOCKER&ps=500'",
+              returnStdout: true
+            ).trim()
+            unified.scanners.sonarqube = readJSON text: response
+            echo "SonarQube report loaded"
+          } catch (e) {
+            unified.scanners.sonarqube = [error: "Report not available"]
+            echo "SonarQube report missing"
+          }
+
+          // Save unified report
+          writeJSON file: 'unified-scan-report.json', json: unified, pretty: 2
+          echo "Unified report saved: unified-scan-report.json"
+        }
+      }
+      post {
+        always { archiveArtifacts artifacts: 'unified-scan-report.json', allowEmptyArchive: true }
+      }
+    }
+
+      
+    
 
 
     stage('4 - Decision Gate') {
       steps {
         script {
           def criticalCount = 0
+          def highCount = 0
+          def summary = []
+
+          // 1. Trivy — Container vulnerabilities
           try {
-            def trivyReport = readJSON file: 'trivy-report.json'
-            trivyReport.Results?.each { result ->
-              result.Vulnerabilities?.each { vuln ->
-                if (vuln.Severity == 'CRITICAL') criticalCount++
+            def trivy = readJSON file: 'trivy-report.json'
+            def tc = 0; def th = 0
+            trivy.Results?.each { r ->
+              r.Vulnerabilities?.each { v ->
+                if (v.Severity == 'CRITICAL') { tc++; criticalCount++ }
+                if (v.Severity == 'HIGH') { th++; highCount++ }
               }
             }
-          } catch (e) {
-            echo "Could not parse trivy report: ${e.message}"
-          }
+            summary.add("Trivy: ${tc} CRITICAL, ${th} HIGH")
+          } catch (e) { summary.add("Trivy: report not available - ${e.message}") }
+
+          // 2. OWASP DC — Dependency vulnerabilities
+          try {
+            def owasp = readJSON file: 'owasp-dc-report.json'
+            def oc = 0; def oh = 0
+            owasp.dependencies?.each { d ->
+              d.vulnerabilities?.each { v ->
+                def score = v.cvssv3?.baseScore ?: v.cvssv2?.score ?: 0
+                if (score >= 9.0) { oc++; criticalCount++ }
+                else if (score >= 7.0) { oh++; highCount++ }
+              }
+            }
+            summary.add("OWASP DC: ${oc} CRITICAL (CVSS>=9), ${oh} HIGH (CVSS>=7)")
+          } catch (e) { summary.add("OWASP DC: report not available - ${e.message}") }
+
+          // 3. SonarQube — Quality Gate
+          try {
+            def response = sh(
+              script: "curl -s -u ${env.SONAR_AUTH_TOKEN}: 'http://localhost:9000/api/qualitygates/project_status?projectKey=m1-app'",
+              returnStdout: true
+            ).trim()
+            def sonar = readJSON text: response
+            def status = sonar.projectStatus?.status ?: 'UNKNOWN'
+            summary.add("SonarQube Quality Gate: ${status}")
+            if (status == 'ERROR') criticalCount++
+          } catch (e) { summary.add("SonarQube: check skipped - ${e.message}") }
+
+          // Print summary
+          echo "========== DECISION GATE SUMMARY =========="
+          summary.each { echo it }
+          echo "TOTAL: ${criticalCount} CRITICAL, ${highCount} HIGH"
+          echo "============================================"
 
           env.CRITICAL_COUNT = criticalCount.toString()
-          echo "Critical vulnerabilities found: ${criticalCount}"
+          env.HIGH_COUNT = highCount.toString()
+          env.GATE_RESULT = criticalCount > 0 ? 'FAIL' : 'PASS'
 
+          // Decision rule: Any CRITICAL → BLOCK
           if (criticalCount > 0) {
-            error("GATE FAILED: ${criticalCount} CRITICAL vulnerabilities. Pipeline aborted.")
+            error("GATE FAILED: ${criticalCount} CRITICAL findings. Fix vulnerabilities and push again.")
           }
-          echo "Gate PASSED — continuing pipeline."
+          echo "GATE PASSED — no critical findings. Deploying."
         }
       }
     }
