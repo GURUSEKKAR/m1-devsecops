@@ -21,27 +21,33 @@ pipeline {
         echo "Image built: ${IMAGE_NAME}:${BUILD_NUMBER}"
       }
     }
-stage('3A - Trivy') {
-  steps {
-    sh """
-      rm -f trivy.yaml
-      TRIVY_CONFIG=/etc/trivy/trivy.yaml trivy image \
-        --format json \
-        --output trivy-report.json \
-        --exit-code 0 \
-        --severity CRITICAL,HIGH \
-        ${IMAGE_NAME}:${BUILD_NUMBER}
-    """
-  }
-  post {
-    always { archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true }
-  }
-}
+
+    stage('3 - Security Scans') {
+      parallel {
+
+        stage('3A - Trivy') {
+          steps {
+            sh """
+              mkdir -p /tmp/trivy-cache
+              TRIVY_CONFIG=/dev/null trivy image \
+                --cache-dir /tmp/trivy-cache \
+                --format json \
+                --output trivy-report.json \
+                --exit-code 0 \
+                --severity CRITICAL,HIGH \
+                --no-progress \
+                ${IMAGE_NAME}:${BUILD_NUMBER}
+            """
+          }
+          post {
+            always { archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true }
+          }
+        }
 
         stage('3B - OWASP DC') {
           steps {
             sh """
-              dependency-check \
+              /opt/dependency-check/bin/dependency-check.sh \
                 --project m1-app \
                 --scan . \
                 --format JSON \
@@ -63,8 +69,9 @@ stage('3A - Trivy') {
                 sonar-scanner \
                   -Dsonar.projectKey=m1-app \
                   -Dsonar.projectName=m1-app \
-                  -Dsonar.sources=src \
-                  -Dsonar.host.url=http://localhost:9000
+                  -Dsonar.sources=. \
+                  -Dsonar.host.url=http://localhost:9000 \
+                  -Dsonar.exclusions='**/node_modules/**,**/trivy-report.*,**/owasp-dc-report.*,**/dependency-check-report.*'
               """
             }
           }
@@ -72,6 +79,8 @@ stage('3A - Trivy') {
 
       }
     }
+
+
 
     stage('4 - Decision Gate') {
       steps {
