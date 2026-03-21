@@ -2,7 +2,7 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME  = "YOURDOCKERHUBNAME/m1-app"
+    IMAGE_NAME  = "gurusekkarreddy/m1-app"
     APP_EC2_IP  = "65.0.85.150"   // will be filled after terraform apply
   }
 
@@ -53,6 +53,7 @@ pipeline {
                 --format JSON \
                 --out . \
                 --failOnCVSS 11 \
+                --noupdate \
                 --nvdApiDelay 4000 || true
               mv dependency-check-report.json owasp-dc-report.json || true
             """
@@ -71,7 +72,7 @@ pipeline {
                   -Dsonar.projectName=m1-app \
                   -Dsonar.sources=. \
                   -Dsonar.host.url=http://localhost:9000 \
-                  -Dsonar.exclusions='**/node_modules/**,**/trivy-report.*,**/owasp-dc-report.*,**/dependency-check-report.*'
+                  -Dsonar.exclusions='**/node_modules/**,**/*.json,**/trivy-report.*,**/owasp-dc-report.*'
               """
             }
           }
@@ -79,7 +80,6 @@ pipeline {
 
       }
     }
-
 
 
     stage('4 - Decision Gate') {
