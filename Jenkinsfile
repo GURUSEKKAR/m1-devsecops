@@ -25,8 +25,7 @@ stage('3A - Trivy') {
   steps {
     sh """
       rm -f trivy.yaml
-      TRIVY_CONFIG=/dev/null trivy image \
-        --cache-dir /tmp/trivy-cache \
+      TRIVY_CONFIG=/etc/trivy/trivy.yaml trivy image \
         --format json \
         --output trivy-report.json \
         --exit-code 0 \
@@ -38,7 +37,6 @@ stage('3A - Trivy') {
     always { archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true }
   }
 }
-        
 
         stage('3B - OWASP DC') {
           steps {
