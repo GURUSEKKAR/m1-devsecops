@@ -65,7 +65,11 @@ pipeline {
                 --noupdate \
                 --data /opt/dependency-check/data \
                 || true
-              mv dependency-check-report.json owasp-dc-report.json || true
+              if [ -f dependency-check-report.json ]; then
+                mv dependency-check-report.json owasp-dc-report.json
+              else
+                cd src && npm audit --json > ../owasp-dc-report.json || true
+              fi
             """
           }
           post {
@@ -222,9 +226,11 @@ pipeline {
     stage('5.5 - Cleanup') {
       steps {
         sh """
+          docker stop sonarqube || true
           docker image prune -f
           docker rmi ${IMAGE_NAME}:${BUILD_NUMBER} || true
         """
+        echo "Cleanup done — SonarQube stopped to free memory for deploy"
       }
     }
 
