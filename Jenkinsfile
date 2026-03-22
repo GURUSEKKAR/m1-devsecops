@@ -315,7 +315,34 @@ PYEOF
   }
 
   post {
-    success { echo "ALL STAGES PASSED — Review 2 complete!" }
-    failure { echo "Pipeline FAILED — check stage logs above." }
+    always {
+      script {
+        def status = currentBuild.result ?: 'SUCCESS'
+        try {
+          emailext(
+            subject: "M1 Pipeline #${BUILD_NUMBER} - ${status}",
+            body: """
+Pipeline: M1-DevSecOps-Pipeline
+Build: #${BUILD_NUMBER}
+Status: ${status}
+Commit: ${env.GIT_COMMIT}
+Branch: ${env.GIT_BRANCH}
+
+Critical: ${env.CRITICAL_COUNT ?: 'N/A'}
+High: ${env.HIGH_COUNT ?: 'N/A'}
+Gate: ${env.GATE_RESULT ?: 'N/A'}
+
+View full report: ${env.BUILD_URL}artifact/
+            """,
+            attachmentsPattern: 'trivy-report.json, owasp-dc-report.json, unified-scan-report.json, zap-report.html',
+            to: 'gurusekkar@gmail.com',
+            mimeType: 'text/plain'
+          )
+          echo "Email sent to developer"
+        } catch (e) {
+          echo "Email failed: ${e.message}"
+        }
+      }
+    }
   }
 }
