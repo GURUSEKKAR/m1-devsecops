@@ -54,28 +54,28 @@ pipeline {
         }
 
         stage('3B - OWASP DC') {
-  steps {
-    sh """
-      /opt/dependency-check/bin/dependency-check.sh \
-        --project m1-app \
-        --scan src/package.json \
-        --format JSON \
-        --out . \
-        --failOnCVSS 11 \
-        --noupdate \
-        --data /opt/dependency-check/data \
-        || true
-      if [ -f dependency-check-report.json ]; then
-        mv dependency-check-report.json owasp-dc-report.json
-      else
-        echo '{"dependencies":[]}' > owasp-dc-report.json
-      fi
-    """
-  }
-  post {
-    always { archiveArtifacts artifacts: 'owasp-dc-report.json', allowEmptyArchive: true }
-  }
-}
+          steps {
+            sh """
+              /opt/dependency-check/bin/dependency-check.sh \
+                --project m1-app \
+                --scan src/package.json \
+                --format JSON \
+                --out . \
+                --failOnCVSS 11 \
+                --noupdate \
+                --data /opt/dependency-check/data \
+                || true
+              if [ -f dependency-check-report.json ]; then
+                mv dependency-check-report.json owasp-dc-report.json
+              else
+                cd src && npm audit --json > ../owasp-dc-report.json || true
+              fi
+            """
+          }
+          post {
+            always { archiveArtifacts artifacts: 'owasp-dc-report.json', allowEmptyArchive: true }
+          }
+        }
 
         stage('3C - SonarQube') {
           steps {
@@ -251,7 +251,7 @@ pipeline {
           sh """
             sleep 10
             curl -s -o /dev/null -w '%{http_code}' http://${APP_EC2_IP}:80 || true
-            echo "Deploy complete"
+          echo "Deploy complete"
           """
         }
       }
