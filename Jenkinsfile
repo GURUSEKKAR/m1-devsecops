@@ -17,6 +17,17 @@ pipeline {
 
   stages {
 
+    stage('0 - Prepare') {
+      steps {
+        sh """
+          docker start sonarqube || true
+          sleep 60
+          curl -s http://localhost:9000/api/system/status || true
+        """
+        echo "SonarQube started"
+      }
+    }
+
     stage('1 - Checkout') {
       steps {
         checkout scm
