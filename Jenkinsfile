@@ -2,8 +2,17 @@ pipeline {
   agent any
 
   environment {
-    IMAGE_NAME  = "gurusekkarreddy/m1-app"
-    APP_EC2_IP  = "3.111.85.206"   // will be filled after terraform apply
+    IMAGE_NAME = "gurusekkarreddy/m1-app"
+    APP_EC2_IP = "3.111.85.206"
+  }
+
+  triggers {
+    githubPush()
+  }
+
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    disableConcurrentBuilds()
   }
 
   stages {
@@ -49,12 +58,13 @@ pipeline {
             sh """
               /opt/dependency-check/bin/dependency-check.sh \
                 --project m1-app \
-                --scan . \
+                --scan src/ \
                 --format JSON \
                 --out . \
                 --failOnCVSS 11 \
                 --noupdate \
-                --nvdApiDelay 4000 || true
+                --data /opt/dependency-check/data \
+                || true
               mv dependency-check-report.json owasp-dc-report.json || true
             """
           }
@@ -70,16 +80,18 @@ pipeline {
                 sonar-scanner \
                   -Dsonar.projectKey=m1-app \
                   -Dsonar.projectName=m1-app \
-                  -Dsonar.sources=. \
+                  -Dsonar.sources=src \
                   -Dsonar.host.url=http://localhost:9000 \
-                  -Dsonar.exclusions='**/node_modules/**,**/*.json,**/trivy-report.*,**/owasp-dc-report.*'
+                  -Dsonar.exclusions='**/node_modules/**,**/*.json'
               """
             }
           }
         }
+
       }
     }
-        stage('3.5 - Collect Reports') {
+
+    stage('3.5 - Collect Reports') {
       steps {
         script {
           def unified = [
@@ -92,50 +104,39 @@ pipeline {
             scanners: [:]
           ]
 
-          // 1. Trivy
           try {
             unified.scanners.trivy = readJSON file: 'trivy-report.json'
             echo "Trivy report loaded"
           } catch (e) {
             unified.scanners.trivy = [error: "Report not available"]
-            echo "Trivy report missing"
           }
 
-          // 2. OWASP DC
           try {
             unified.scanners.owasp_dc = readJSON file: 'owasp-dc-report.json'
             echo "OWASP DC report loaded"
           } catch (e) {
             unified.scanners.owasp_dc = [error: "Report not available"]
-            echo "OWASP DC report missing"
           }
 
-          // 3. SonarQube
           try {
             def response = sh(
-              script: "curl -s -u ${env.SONAR_AUTH_TOKEN}: 'http://localhost:9000/api/issues/search?projectKeys=m1-app&severities=CRITICAL,MAJOR,BLOCKER&ps=500'",
+              script: "curl -s -u \${SONAR_AUTH_TOKEN}: 'http://localhost:9000/api/issues/search?projectKeys=m1-app&severities=CRITICAL,MAJOR,BLOCKER&ps=500'",
               returnStdout: true
             ).trim()
             unified.scanners.sonarqube = readJSON text: response
             echo "SonarQube report loaded"
           } catch (e) {
             unified.scanners.sonarqube = [error: "Report not available"]
-            echo "SonarQube report missing"
           }
 
-          // Save unified report
           writeJSON file: 'unified-scan-report.json', json: unified, pretty: 2
-          echo "Unified report saved: unified-scan-report.json"
+          echo "Unified report saved"
         }
       }
       post {
         always { archiveArtifacts artifacts: 'unified-scan-report.json', allowEmptyArchive: true }
       }
     }
-
-      
-    
-
 
     stage('4 - Decision Gate') {
       steps {
@@ -144,7 +145,6 @@ pipeline {
           def highCount = 0
           def summary = []
 
-          // 1. Trivy — Container vulnerabilities
           try {
             def trivy = readJSON file: 'trivy-report.json'
             def tc = 0; def th = 0
@@ -155,9 +155,8 @@ pipeline {
               }
             }
             summary.add("Trivy: ${tc} CRITICAL, ${th} HIGH")
-          } catch (e) { summary.add("Trivy: report not available - ${e.message}") }
+          } catch (e) { summary.add("Trivy: report not available") }
 
-          // 2. OWASP DC — Dependency vulnerabilities
           try {
             def owasp = readJSON file: 'owasp-dc-report.json'
             def oc = 0; def oh = 0
@@ -168,22 +167,20 @@ pipeline {
                 else if (score >= 7.0) { oh++; highCount++ }
               }
             }
-            summary.add("OWASP DC: ${oc} CRITICAL (CVSS>=9), ${oh} HIGH (CVSS>=7)")
-          } catch (e) { summary.add("OWASP DC: report not available - ${e.message}") }
+            summary.add("OWASP DC: ${oc} CRITICAL, ${oh} HIGH")
+          } catch (e) { summary.add("OWASP DC: report not available") }
 
-          // 3. SonarQube — Quality Gate
           try {
             def response = sh(
-              script: "curl -s -u ${env.SONAR_AUTH_TOKEN}: 'http://localhost:9000/api/qualitygates/project_status?projectKey=m1-app'",
+              script: "curl -s -u \${SONAR_AUTH_TOKEN}: 'http://localhost:9000/api/qualitygates/project_status?projectKey=m1-app'",
               returnStdout: true
             ).trim()
             def sonar = readJSON text: response
             def status = sonar.projectStatus?.status ?: 'UNKNOWN'
             summary.add("SonarQube Quality Gate: ${status}")
             if (status == 'ERROR') criticalCount++
-          } catch (e) { summary.add("SonarQube: check skipped - ${e.message}") }
+          } catch (e) { summary.add("SonarQube: check skipped") }
 
-          // Print summary
           echo "========== DECISION GATE SUMMARY =========="
           summary.each { echo it }
           echo "TOTAL: ${criticalCount} CRITICAL, ${highCount} HIGH"
@@ -193,11 +190,10 @@ pipeline {
           env.HIGH_COUNT = highCount.toString()
           env.GATE_RESULT = criticalCount > 0 ? 'FAIL' : 'PASS'
 
-          // Decision rule: Any CRITICAL → BLOCK
           if (criticalCount > 0) {
-            error("GATE FAILED: ${criticalCount} CRITICAL findings. Fix vulnerabilities and push again.")
+            error("GATE FAILED: ${criticalCount} CRITICAL findings. Fix and push again.")
           }
-          echo "GATE PASSED — no critical findings. Deploying."
+          echo "GATE PASSED — deploying."
         }
       }
     }
@@ -210,12 +206,21 @@ pipeline {
           passwordVariable: 'DOCKER_PASS'
         )]) {
           sh """
-            echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+            echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
             docker push ${IMAGE_NAME}:${BUILD_NUMBER}
             docker push ${IMAGE_NAME}:latest
             docker logout
           """
         }
+      }
+    }
+
+    stage('5.5 - Cleanup') {
+      steps {
+        sh """
+          docker image prune -f
+          docker rmi ${IMAGE_NAME}:${BUILD_NUMBER} || true
+        """
       }
     }
 
@@ -245,25 +250,27 @@ pipeline {
 
     stage('7 - OWASP ZAP DAST') {
       steps {
-        sh """
-          docker run --rm \
-            -v \$(pwd):/zap/wrk \
-            ghcr.io/zaproxy/zaproxy:stable \
-            zap-baseline.py \
-            -t http://${APP_EC2_IP}:80 \
-            -r zap-report.html \
-            -J zap-report.json \
-            -I
-        """
+        timeout(time: 10, unit: 'MINUTES') {
+          sh """
+            docker run --rm \
+              -v \$(pwd):/zap/wrk \
+              ghcr.io/zaproxy/zaproxy:stable \
+              zap-baseline.py \
+              -t http://${APP_EC2_IP}:80 \
+              -r zap-report.html \
+              -J zap-report.json \
+              -I
+          """
+        }
       }
       post {
         always {
           archiveArtifacts artifacts: 'zap-report.html, zap-report.json', allowEmptyArchive: true
           publishHTML(target: [
             allowMissing: true,
-            reportName:   'ZAP Security Report',
-            reportDir:    '.',
-            reportFiles:  'zap-report.html'
+            reportName: 'ZAP Security Report',
+            reportDir: '.',
+            reportFiles: 'zap-report.html'
           ])
         }
       }
