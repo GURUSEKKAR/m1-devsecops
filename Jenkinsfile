@@ -54,38 +54,43 @@ pipeline {
         }
 
         stage('3B - OWASP DC') {
-  steps {
-    sh """
-      cd src
-      npm audit --json > ../npm-audit-raw.json 2>&1 || true
-      cd ..
-      python3 -c "
-      import json, sys
-      try:
-      with open('npm-audit-raw.json') as f:
+          steps {
+            sh '''
+              cd src
+              npm audit --json > ../npm-audit-raw.json 2>&1 || true
+              cd ..
+              python3 << 'PYEOF'
+import json
+try:
+    with open('npm-audit-raw.json') as f:
         audit = json.load(f)
-      deps = []
-      vulns = audit.get('vulnerabilities', {})
-      for name, info in vulns.items():
+    deps = []
+    vulns = audit.get('vulnerabilities', {})
+    for name, info in vulns.items():
+        sev = info.get('severity', 'low')
+        score_map = {'critical': 9.5, 'high': 8.0, 'moderate': 5.0, 'low': 2.0}
+        via = info.get('via', [{}])
+        cve_name = via[0].get('name', name) if isinstance(via[0], dict) else name
         v = {
             'fileName': name,
             'vulnerabilities': [{
-                'name': info.get('via', [{}])[0].get('name', name) if isinstance(info.get('via', [{}])[0], dict) else name,
-                'severity': info.get('severity', 'UNKNOWN').upper(),
-                'cvssv3': {'baseScore': {'critical':9.5,'high':8.0,'moderate':5.0,'low':2.0}.get(info.get('severity','low'), 0)}
+                'name': cve_name,
+                'severity': sev.upper(),
+                'cvssv3': {'baseScore': score_map.get(sev, 0)}
             }]
         }
         deps.append(v)
-    json.dump({'dependencies': deps}, open('owasp-dc-report.json','w'), indent=2)
-except:
-    json.dump({'dependencies': []}, open('owasp-dc-report.json','w'))
-"
-    """
-  }
-  post {
-    always { archiveArtifacts artifacts: 'owasp-dc-report.json', allowEmptyArchive: true }
-  }
-}
+    with open('owasp-dc-report.json', 'w') as f:
+        json.dump({'dependencies': deps}, f, indent=2)
+except Exception:
+    with open('owasp-dc-report.json', 'w') as f:
+        json.dump({'dependencies': []}, f)
+PYEOF
+            '''
+          }
+          post {
+            always { archiveArtifacts artifacts: 'owasp-dc-report.json', allowEmptyArchive: true }
+          }
         }
 
         stage('3C - SonarQube') {
@@ -262,7 +267,7 @@ except:
           sh """
             sleep 10
             curl -s -o /dev/null -w '%{http_code}' http://${APP_EC2_IP}:80 || true
-          echo "Deploy complete"
+            echo "Deploy complete"
           """
         }
       }
