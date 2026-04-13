@@ -269,6 +269,9 @@ PYEOF
     }
 
     stage('5.5 - Cleanup') {
+      when {
+        expression { env.GATE_RESULT == 'PASS' }
+      }
       steps {
         sh """
           docker stop sonarqube || true
