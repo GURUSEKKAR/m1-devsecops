@@ -4,6 +4,7 @@ pipeline {
   environment {
     IMAGE_NAME = "gurusekkarreddy/m1-app"
     APP_EC2_IP = "3.111.85.206"
+    AI_ENDPOINT_URL = "https://shaunte-fixtureless-carolin.ngrok-free.dev"
   }
 
   triggers {
@@ -11,7 +12,7 @@ pipeline {
   }
 
   options {
-    timeout(time: 30, unit: 'MINUTES')
+    timeout(time: 45, unit: 'MINUTES')
     disableConcurrentBuilds()
   }
 
@@ -223,18 +224,35 @@ PYEOF
 
           env.CRITICAL_COUNT = criticalCount.toString()
           env.HIGH_COUNT = highCount.toString()
-          env.GATE_RESULT = criticalCount > 0 ? 'FAIL' : 'PASS'
+          env.TOTAL_FINDINGS = (criticalCount + highCount).toString()
 
           if (criticalCount > 0) {
-            echo "WARNING: ${criticalCount} CRITICAL findings detected. Review before production."
+            env.GATE_RESULT = 'FAIL'
+            echo "============================================"
+            echo "  GATE FAILED — DEPLOYMENT BLOCKED"
+            echo "  ${criticalCount} CRITICAL vulnerabilities found"
+            echo "  Skipping Deploy + ZAP"
+            echo "  Sending to AI for remediation..."
+            echo "============================================"
+          } else {
+            env.GATE_RESULT = 'PASS'
+            echo "============================================"
+            echo "  GATE PASSED — NO CRITICAL VULNERABILITIES"
+            echo "  Proceeding to Deploy + ZAP scan"
+            echo "============================================"
           }
-          echo "GATE PASSED — deploying."
         }
       }
     }
 
+    // ==================== PASS PATH: Deploy + ZAP ====================
+
     stage('5 - Push to Docker Hub') {
+      when {
+        expression { env.GATE_RESULT == 'PASS' }
+      }
       steps {
+        echo 'Gate PASSED — Pushing image to Docker Hub...'
         withCredentials([usernamePassword(
           credentialsId: 'dockerhub-creds',
           usernameVariable: 'DOCKER_USER',
@@ -257,12 +275,16 @@ PYEOF
           docker image prune -f
           docker rmi ${IMAGE_NAME}:${BUILD_NUMBER} || true
         """
-        echo "Cleanup done — SonarQube stopped to free memory for deploy"
+        echo "Cleanup done — SonarQube stopped to free memory"
       }
     }
 
     stage('6 - Deploy to App EC2') {
+      when {
+        expression { env.GATE_RESULT == 'PASS' }
+      }
       steps {
+        echo 'Gate PASSED — Deploying to App EC2...'
         sshagent(['ec2-ssh-key']) {
           sh """
             ssh -o StrictHostKeyChecking=no ubuntu@${APP_EC2_IP} '
@@ -278,14 +300,18 @@ PYEOF
           sh """
             sleep 10
             curl -s -o /dev/null -w '%{http_code}' http://${APP_EC2_IP}:80 || true
-            echo "Deploy complete"
+            echo "Deploy complete — App is live!"
           """
         }
       }
     }
 
     stage('7 - OWASP ZAP DAST') {
+      when {
+        expression { env.GATE_RESULT == 'PASS' }
+      }
       steps {
+        echo 'Gate PASSED — Running ZAP DAST on live app...'
         timeout(time: 10, unit: 'MINUTES') {
           sh """
             docker run --rm \
@@ -302,12 +328,113 @@ PYEOF
       post {
         always {
           archiveArtifacts artifacts: 'zap-report.html, zap-report.json', allowEmptyArchive: true
-          publishHTML(target: [
+        }
+      }
+    }
+
+    // ==================== FAIL PATH: Skip Deploy, go to AI ====================
+
+    stage('BLOCKED - No Deploy') {
+      when {
+        expression { env.GATE_RESULT == 'FAIL' }
+      }
+      steps {
+        echo '============================================'
+        echo '  DEPLOYMENT BLOCKED'
+        echo '  Critical vulnerabilities detected!'
+        echo '  Stages 5, 6, 7 SKIPPED'
+        echo '  Sending findings to AI for fix suggestions...'
+        echo '============================================'
+
+        // Stop SonarQube to free memory for AI stage
+        sh """
+          docker stop sonarqube || true
+          docker image prune -f
+          docker rmi ${IMAGE_NAME}:${BUILD_NUMBER} || true
+        """
+      }
+    }
+
+    // ==================== AI STAGES (ALWAYS RUN) ====================
+
+    stage('8 - AI Remediation') {
+      steps {
+        script {
+          echo '============================================'
+          echo '  STAGE 8: AI REMEDIATION ENGINE'
+          echo "  AI Endpoint: ${env.AI_ENDPOINT_URL}"
+          echo "  Gate Result: ${env.GATE_RESULT}"
+          echo '============================================'
+
+          if (env.GATE_RESULT == 'FAIL') {
+            echo '>>> BLOCKED BUILD: AI analyzing Trivy + OWASP DC + SonarQube findings'
+            echo '>>> Goal: Generate fix suggestions so developer can resolve and push again'
+          } else {
+            echo '>>> PASSED BUILD: AI analyzing ALL findings including ZAP DAST'
+            echo '>>> Goal: Generate improvement suggestions for deployed app'
+          }
+
+          sh 'pip3 install requests --quiet 2>/dev/null || true'
+
+          def healthCheck = sh(
+            script: "curl -s -o /dev/null -w '%{http_code}' --max-time 10 ${env.AI_ENDPOINT_URL}/health || echo '000'",
+            returnStdout: true
+          ).trim()
+
+          if (healthCheck == '200') {
+            echo 'AI endpoint is HEALTHY. Running remediation...'
+            sh "AI_ENDPOINT_URL=${env.AI_ENDPOINT_URL} python3 ai_remediation.py"
+            echo 'AI Remediation complete!'
+          } else {
+            echo "WARNING: AI endpoint not reachable (HTTP ${healthCheck}). Skipping AI."
+            sh """python3 -c "
+import json
+data={'pipeline':{},'total_findings':0,'processed':0,'success':0,'failed':0,'ai_endpoint':'unavailable','scanners':{'trivy':[],'owasp_dc':[],'sonarqube':[],'zap':[]},'results':[],'status':'ai_unavailable'}
+with open('ai-remediation-results.json','w') as f: json.dump(data,f,indent=2)
+print('Fallback results created.')
+" """
+          }
+        }
+      }
+      post {
+        always { archiveArtifacts artifacts: 'ai-remediation-results.json', allowEmptyArchive: true }
+      }
+    }
+
+    stage('9 - Unified Report') {
+      steps {
+        script {
+          echo '============================================'
+          echo '  STAGE 9: UNIFIED REPORT GENERATION'
+          echo '============================================'
+
+          sh 'python3 generate_report.py'
+          echo 'Unified security report with AI suggestions generated!'
+        }
+      }
+      post {
+        always { archiveArtifacts artifacts: 'unified-security-report.html', allowEmptyArchive: true }
+      }
+    }
+
+    stage('10 - Notification') {
+      steps {
+        script {
+          echo '============================================'
+          echo '  STAGE 10: NOTIFICATION & DELIVERY'
+          echo '============================================'
+
+          publishHTML([
             allowMissing: true,
-            reportName: 'ZAP Security Report',
+            alwaysLinkToLastBuild: true,
+            keepAll: true,
             reportDir: '.',
-            reportFiles: 'zap-report.html'
+            reportFiles: 'unified-security-report.html',
+            reportName: 'M1 Security Report',
+            reportTitles: 'Unified Security Report with AI Remediation'
           ])
+
+          echo 'Reports archived and published!'
         }
       }
     }
@@ -318,23 +445,59 @@ PYEOF
     always {
       script {
         def status = currentBuild.result ?: 'SUCCESS'
+        def gateResult = env.GATE_RESULT ?: 'N/A'
+        def deployStatus = gateResult == 'PASS' ? 'YES - App deployed and ZAP scanned' : 'NO - BLOCKED due to critical vulnerabilities'
+
         try {
           emailext(
-            subject: "M1 Pipeline #${BUILD_NUMBER} - ${status}",
+            subject: "M1 Pipeline #${BUILD_NUMBER} | Gate: ${gateResult} | ${status}",
             body: """
-Pipeline: M1-DevSecOps-Pipeline
-Build: #${BUILD_NUMBER}
-Status: ${status}
-Commit: ${env.GIT_COMMIT}
-Branch: ${env.GIT_BRANCH}
+====================================================
+  M1 DevSecOps Pipeline - Build #${BUILD_NUMBER}
+====================================================
 
-Critical: ${env.CRITICAL_COUNT ?: 'N/A'}
-High: ${env.HIGH_COUNT ?: 'N/A'}
-Gate: ${env.GATE_RESULT ?: 'N/A'}
+Build Status:  ${status}
+Gate Result:   ${gateResult}
+Deployed:      ${deployStatus}
+Commit:        ${env.GIT_COMMIT}
+Branch:        ${env.GIT_BRANCH}
 
-View full report: ${env.BUILD_URL}artifact/
+----------------------------------------------------
+  VULNERABILITY SUMMARY
+----------------------------------------------------
+Critical: ${env.CRITICAL_COUNT ?: '0'}
+High:     ${env.HIGH_COUNT ?: '0'}
+
+${gateResult == 'FAIL' ? """*** DEPLOYMENT BLOCKED ***
+Critical vulnerabilities were found during scanning.
+The app was NOT deployed.
+
+What to do:
+1. Open the attached unified-security-report.html
+2. Review AI-generated fix suggestions for each vulnerability
+3. Apply the fixes to your code
+4. Push again to trigger a new pipeline run
+""" : """*** DEPLOYMENT SUCCESSFUL ***
+No critical vulnerabilities found.
+App deployed to http://${env.APP_EC2_IP}:80
+ZAP DAST scan completed on the live app.
+
+Review the attached report for:
+- ZAP findings with AI fix suggestions
+- Any HIGH severity items to address
+"""}
+----------------------------------------------------
+  REPORTS
+----------------------------------------------------
+AI Security Report: ${env.BUILD_URL}M1_20Security_20Report/
+All Artifacts:      ${env.BUILD_URL}artifact/
+
+====================================================
+  AI: Fine-Tuned CodeLLaMA 7B on CVEfixes
+  M1 DevSecOps | Academic Year 2025-2026
+====================================================
             """,
-            attachmentsPattern: 'trivy-report.json, owasp-dc-report.json, unified-scan-report.json, zap-report.html',
+            attachmentsPattern: 'trivy-report.json, owasp-dc-report.json, unified-scan-report.json, zap-report.html, unified-security-report.html',
             to: 'gurusekkar@gmail.com',
             mimeType: 'text/plain'
           )
