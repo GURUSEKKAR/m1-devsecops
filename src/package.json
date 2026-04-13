@@ -1,7 +1,16 @@
 {
-  "name": "m1-app",
+  "name": "m1-vulnerable-app",
   "version": "1.0.0",
-  "description": "M1 DevSecOps Sample App",
+  "description": "M1 DevSecOps Vulnerable Sample App - Training Purposes Only",
   "main": "index.js",
-  "scripts": { "start": "node index.js" }
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "4.17.1",
+    "lodash": "4.17.4",
+    "axios": "0.19.0",
+    "node-serialize": "0.0.4",
+    "multer": "1.4.2"
+  }
 }
