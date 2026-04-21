@@ -2,325 +2,185 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cookieParser = require('cookie-parser');
 const jwt = require('jsonwebtoken');
-const ejs = require('ejs');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// VULNERABILITY: No security headers (ZAP will catch: missing CSP, X-Frame-Options, etc.)
-// NOT using helmet on purpose
+// ✅ Security headers
+app.use(helmet());
+
+// ✅ Rate limiting (protect login, APIs)
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100
+});
+app.use(limiter);
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// VULNERABILITY: Hardcoded secrets (SonarQube will catch)
-const JWT_SECRET = 'super-secret-key-12345';
-const DB_PASSWORD = 'admin123';
-const API_KEY = 'sk-1234567890abcdef';
+// ✅ Move secrets to env variables
+const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret';
 
-// In-memory "database" for demo
+// ✅ Hash password (for demo using sha256)
+const hash = (pwd) => crypto.createHash('sha256').update(pwd).digest('hex');
+
+// In-memory DB
 let users = [
-  { id: 1, username: 'admin', password: 'admin123', role: 'admin' },
-  { id: 2, username: 'user1', password: 'password', role: 'user' },
-  { id: 3, username: 'guest', password: 'guest', role: 'guest' }
+  { id: 1, username: 'admin', password: hash('admin123'), role: 'admin' },
+  { id: 2, username: 'user1', password: hash('password'), role: 'user' }
 ];
 
-let messages = [
-  { id: 1, user: 'admin', text: 'Welcome to M1 App!', timestamp: new Date().toISOString() }
-];
+let messages = [];
+
+// ==================== HELPERS ====================
+
+// ✅ Auth middleware
+function authenticate(req, res, next) {
+  const token = req.cookies.auth_token;
+  if (!token) return res.status(401).send('Unauthorized');
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch {
+    return res.status(401).send('Invalid token');
+  }
+}
 
 // ==================== ROUTES ====================
 
-// Home page
+// Home
 app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>M1 DevSecOps Demo App</title>
-      <style>
-        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; background: #f5f5f5; }
-        .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #1B2A4A; }
-        .vuln { background: #fff3e0; border-left: 4px solid #ff9800; padding: 10px; margin: 10px 0; }
-        a { color: #1e3799; }
-        input, button { padding: 8px 12px; margin: 4px; }
-        button { background: #1e3799; color: white; border: none; cursor: pointer; border-radius: 4px; }
-        button:hover { background: #0c2461; }
-        .messages { background: #f0f0f0; padding: 15px; border-radius: 5px; margin: 10px 0; }
-        .msg { padding: 5px 0; border-bottom: 1px solid #ddd; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>M1 DevSecOps Demo Application</h1>
-        <p>This application is <strong>intentionally vulnerable</strong> for security scanning demonstration.</p>
-        
-        <h3>Application Features:</h3>
-        <ul>
-          <li><a href="/login">Login Page</a> - Authentication</li>
-          <li><a href="/search?q=test">Search</a> - Search functionality</li>
-          <li><a href="/messages">Messages</a> - Message board</li>
-          <li><a href="/profile/1">User Profile</a> - User information</li>
-          <li><a href="/api/users">API: Users</a> - REST API</li>
-          <li><a href="/health">Health Check</a> - System status</li>
-          <li><a href="/debug">Debug Info</a> - System debug</li>
-        </ul>
-
-        <div class="vuln">
-          <strong>Security Note:</strong> This app contains intentional vulnerabilities for 
-          testing the M1 DevSecOps pipeline security scanners (Trivy, OWASP DC, SonarQube, ZAP).
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
+  res.send(`<h1>Secure M1 App</h1><a href="/login">Login</a>`);
 });
 
-// VULNERABILITY: XSS - User input directly reflected in HTML (SonarQube + ZAP will catch)
+// ✅ FIXED XSS using escape
+function escapeHTML(str) {
+  return str.replace(/[&<>"']/g, (char) => {
+    const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+    return map[char];
+  });
+}
+
 app.get('/search', (req, res) => {
-  const query = req.query.q || '';
-  res.send(`
-    <html>
-    <head><title>Search Results</title></head>
-    <body>
-      <h2>Search Results for: ${query}</h2>
-      <p>No results found for "${query}"</p>
-      <form action="/search" method="GET">
-        <input type="text" name="q" value="${query}" placeholder="Search...">
-        <button type="submit">Search</button>
-      </form>
-      <a href="/">Back to Home</a>
-    </body>
-    </html>
-  `);
+  const query = escapeHTML(req.query.q || '');
+  res.send(`<h2>Search: ${query}</h2>`);
 });
 
 // Login page
 app.get('/login', (req, res) => {
   res.send(`
-    <html>
-    <head><title>Login</title></head>
-    <body style="font-family:Arial;max-width:400px;margin:50px auto;">
-      <h2>Login</h2>
-      <form action="/login" method="POST">
-        <input type="text" name="username" placeholder="Username" required><br><br>
-        <input type="password" name="password" placeholder="Password" required><br><br>
-        <button type="submit">Login</button>
-      </form>
-      <p><a href="/">Back to Home</a></p>
-    </body>
-    </html>
+    <form method="POST">
+      <input name="username" required />
+      <input name="password" type="password" required />
+      <button>Login</button>
+    </form>
   `);
 });
 
-// VULNERABILITY: Plaintext password comparison, no rate limiting, no CSRF (SonarQube will catch)
+// ✅ Secure login
 app.post('/login', (req, res) => {
   const { username, password } = req.body;
-  
-  const user = users.find(u => u.username === username && u.password === password);
-  
-  if (user) {
-    // VULNERABILITY: Weak JWT config, no expiry
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET);
-    
-    // VULNERABILITY: Cookie without secure/httpOnly flags
-    res.cookie('auth_token', token);
-    res.cookie('user_role', user.role);
-    
-    res.send(`
-      <html><body>
-        <h2>Welcome ${user.username}!</h2>
-        <p>Role: ${user.role}</p>
-        <p>Token: ${token}</p>
-        <a href="/">Go to Home</a>
-      </body></html>
-    `);
-  } else {
-    // VULNERABILITY: Information disclosure - tells if username exists
-    const userExists = users.find(u => u.username === username);
-    if (userExists) {
-      res.status(401).send('Invalid password for user: ' + username);
-    } else {
-      res.status(401).send('User not found: ' + username);
-    }
+  const hashed = hash(password);
+
+  const user = users.find(u => u.username === username && u.password === hashed);
+
+  if (!user) return res.status(401).send('Invalid credentials');
+
+  const token = jwt.sign(
+    { id: user.id, role: user.role },
+    JWT_SECRET,
+    { expiresIn: '1h' }
+  );
+
+  res.cookie('auth_token', token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: 'Strict'
+  });
+
+  res.send('Login success');
+});
+
+// ✅ FIXED IDOR + no password exposure
+app.get('/profile/:id', authenticate, (req, res) => {
+  if (req.user.id !== parseInt(req.params.id)) {
+    return res.status(403).send('Forbidden');
   }
+
+  const user = users.find(u => u.id === req.user.id);
+
+  res.json({
+    id: user.id,
+    username: user.username,
+    role: user.role
+  });
 });
 
-// VULNERABILITY: IDOR - No authorization check, any user can view any profile
-app.get('/profile/:id', (req, res) => {
-  const userId = parseInt(req.params.id);
-  const user = users.find(u => u.id === userId);
-  
-  if (user) {
-    // VULNERABILITY: Exposing sensitive data (password)
-    res.json({
-      id: user.id,
-      username: user.username,
-      password: user.password,
-      role: user.role
-    });
-  } else {
-    res.status(404).json({ error: 'User not found' });
-  }
-});
-
-// Messages page
-app.get('/messages', (req, res) => {
-  let messageHtml = messages.map(m => 
-    `<div class="msg"><strong>${m.user}</strong>: ${m.text} <small>(${m.timestamp})</small></div>`
-  ).join('');
-  
-  res.send(`
-    <html>
-    <head><title>Messages</title></head>
-    <body style="font-family:Arial;max-width:600px;margin:50px auto;">
-      <h2>Message Board</h2>
-      <div style="background:#f0f0f0;padding:15px;border-radius:5px;">
-        ${messageHtml}
-      </div>
-      <br>
-      <form action="/messages" method="POST">
-        <input type="text" name="user" placeholder="Your name" required>
-        <input type="text" name="text" placeholder="Your message" required style="width:300px;">
-        <button type="submit">Post</button>
-      </form>
-      <p><a href="/">Back to Home</a></p>
-    </body>
-    </html>
-  `);
-});
-
-// VULNERABILITY: Stored XSS - Message text not sanitized
-app.post('/messages', (req, res) => {
-  const { user, text } = req.body;
+// ✅ FIXED Stored XSS
+app.post('/messages', authenticate, (req, res) => {
+  const text = escapeHTML(req.body.text);
   messages.push({
-    id: messages.length + 1,
-    user: user,
-    text: text,
-    timestamp: new Date().toISOString()
+    user: req.user.id,
+    text,
+    time: new Date()
   });
-  res.redirect('/messages');
+  res.send('Message added');
 });
 
-// VULNERABILITY: SQL injection pattern (SonarQube will catch even without real DB)
-app.get('/api/search-users', (req, res) => {
-  const searchTerm = req.query.name;
-  // VULNERABILITY: String concatenation in query (SQL Injection)
-  const query = "SELECT * FROM users WHERE username = '" + searchTerm + "'";
-  console.log('Executing query: ' + query);
-  
-  // Simulated result
-  const result = users.filter(u => u.username.includes(searchTerm || ''));
-  res.json(result);
-});
-
-// API: Get all users
-app.get('/api/users', (req, res) => {
-  // VULNERABILITY: Exposing all user data including passwords
-  res.json(users);
-});
-
-// VULNERABILITY: Command injection pattern (SonarQube will catch)
+// ✅ FIXED command injection (no exec)
 app.get('/api/ping', (req, res) => {
-  const host = req.query.host || 'localhost';
-  const exec = require('child_process').exec;
-  // VULNERABILITY: Command injection - user input passed directly to exec
-  exec('ping -c 1 ' + host, (error, stdout, stderr) => {
-    res.json({ output: stdout || stderr || 'No response' });
-  });
+  res.send('Ping disabled for security');
 });
 
-// VULNERABILITY: Path traversal (SonarQube will catch)
+// ✅ FIXED path traversal
 app.get('/api/file', (req, res) => {
-  const filename = req.query.name;
-  // VULNERABILITY: No path sanitization - directory traversal possible
+  const filename = path.basename(req.query.name);
   const filepath = path.join(__dirname, 'uploads', filename);
   res.sendFile(filepath);
 });
 
-// VULNERABILITY: Debug endpoint exposing system info (ZAP will catch)
+// ✅ REMOVE debug endpoint or restrict
 app.get('/debug', (req, res) => {
-  res.json({
-    nodeVersion: process.version,
-    platform: process.platform,
-    arch: process.arch,
-    memory: process.memoryUsage(),
-    uptime: process.uptime(),
-    env: {
-      NODE_ENV: process.env.NODE_ENV,
-      PORT: process.env.PORT,
-      // VULNERABILITY: Exposing environment variables
-      PATH: process.env.PATH
-    },
-    cwd: process.cwd(),
-    pid: process.pid
-  });
+  res.status(403).send('Disabled');
 });
 
-// VULNERABILITY: Open redirect (ZAP will catch)
+// ✅ FIXED open redirect
 app.get('/redirect', (req, res) => {
   const url = req.query.url;
-  // VULNERABILITY: No validation of redirect URL
+  if (!url.startsWith('/')) return res.status(400).send('Invalid URL');
   res.redirect(url);
 });
 
-// VULNERABILITY: Insecure eval usage (SonarQube will catch)
+// ✅ REMOVE eval
 app.post('/api/calculate', (req, res) => {
-  const { expression } = req.body;
-  try {
-    // VULNERABILITY: eval() with user input - Remote Code Execution
-    const result = eval(expression);
-    res.json({ result: result });
-  } catch (e) {
-    res.status(400).json({ error: 'Invalid expression' });
-  }
+  res.status(400).send('Disabled');
 });
 
-// VULNERABILITY: Insecure randomness for tokens (SonarQube will catch)
+// ✅ Secure token generation
 app.get('/api/token', (req, res) => {
-  // VULNERABILITY: Math.random() is not cryptographically secure
-  const token = Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
-  res.json({ token: token });
+  const token = crypto.randomBytes(32).toString('hex');
+  res.json({ token });
 });
 
-// VULNERABILITY: No rate limiting on sensitive endpoint
-app.post('/api/reset-password', (req, res) => {
-  const { username, newPassword } = req.body;
-  const user = users.find(u => u.username === username);
-  if (user) {
-    user.password = newPassword;
-    res.json({ message: 'Password reset successful for ' + username });
-  } else {
-    res.status(404).json({ error: 'User not found' });
-  }
-});
-
-// Health check endpoint
+// Health
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    version: '1.0.0'
-  });
+  res.json({ status: 'ok' });
 });
 
-// VULNERABILITY: Verbose error handling exposing stack traces
+// ✅ Safe error handler
 app.use((err, req, res, next) => {
-  // VULNERABILITY: Stack trace exposed to client
-  res.status(500).json({
-    error: err.message,
-    stack: err.stack,
-    path: req.path
-  });
+  res.status(500).json({ error: 'Internal Server Error' });
 });
 
 // Start server
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`M1 DevSecOps Demo App running on port ${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/health`);
-  console.log(`DB Password: ${DB_PASSWORD}`);
-  console.log(`API Key: ${API_KEY}`);
+app.listen(PORT, () => {
+  console.log(`Secure App running on ${PORT}`);
 });
