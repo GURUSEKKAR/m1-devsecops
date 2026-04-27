@@ -1,22 +1,21 @@
 {
-  "name": "m1-secure-app",
-  "version": "1.0.2",
-  "description": "M1 DevSecOps Secure Application",
+  "name": "m1-vulnerable-test-app",
+  "version": "1.0.0",
   "main": "index.js",
-  "scripts": {
-    "start": "node index.js",
-    "test": "echo \"No tests configured\""
-  },
+  "scripts": { "start": "node index.js" },
   "dependencies": {
-    "body-parser":        "1.20.3",
-    "cookie-parser":      "1.4.7",
-    "express":            "4.21.2",
-    "express-rate-limit": "7.4.0",
-    "helmet":             "8.0.0",
-    "jsonwebtoken":       "9.0.2"
-  },
-  "overrides": {
-    "path-to-regexp": "0.1.13",
-    "qs":             "6.13.0"
+    "express": "4.16.0",
+    "lodash": "4.17.4",
+    "minimist": "1.2.0",
+    "jsonwebtoken": "8.3.0",
+    "axios": "0.21.0",
+    "ejs": "3.1.6",
+    "ws": "7.4.5",
+    "node-fetch": "2.6.0",
+    "marked": "0.3.6",
+    "handlebars": "4.0.13",
+    "qs": "6.5.1",
+    "y18n": "4.0.0",
+    "ini": "1.3.5"
   }
 }
