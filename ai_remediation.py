@@ -8,17 +8,17 @@ Collects AI-generated fix suggestions
 
 import json
 import os
+import re
 import sys
 import time
 
-try:
-    import requests
-except ImportError:
-    os.system('pip3 install requests --quiet')
-    import requests
+import requests
 
 # FastAPI endpoint URL - set via environment variable in Jenkinsfile
 AI_ENDPOINT = os.environ.get('AI_ENDPOINT_URL', 'http://localhost:8000')
+
+# How many findings to send to the AI (sorted by severity, highest first)
+MAX_FINDINGS_TO_PROCESS = 25
 
 
 def load_json(filepath):
@@ -29,6 +29,23 @@ def load_json(filepath):
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f'  [WARN] Could not load {filepath}: {e}')
         return None
+
+
+def smart_truncate(text, max_len=500):
+    """Truncate at sentence boundary if possible, else at word boundary."""
+    if not text or len(text) <= max_len:
+        return text
+    cut = text[:max_len]
+    # Prefer a sentence end
+    for sep in ['. ', '! ', '? ']:
+        idx = cut.rfind(sep)
+        if idx > max_len * 0.6:
+            return cut[:idx + 1]
+    # Fallback: word boundary
+    idx = cut.rfind(' ')
+    if idx > 0:
+        return cut[:idx]
+    return cut
 
 
 def parse_trivy_from_unified(unified_report):
@@ -51,7 +68,7 @@ def parse_trivy_from_unified(unified_report):
                 'fixed_version': vuln.get('FixedVersion', 'No fix available'),
                 'severity': vuln.get('Severity', 'UNKNOWN'),
                 'title': vuln.get('Title', ''),
-                'description': vuln.get('Description', '')[:500],
+                'description': smart_truncate(vuln.get('Description', ''), 500),
                 'target': target,
                 'primary_url': vuln.get('PrimaryURL', ''),
                 'cwe_ids': vuln.get('CweIDs', []),
@@ -75,7 +92,7 @@ def parse_owasp_dc_from_unified(unified_report):
                 'cve_id': vuln.get('name', 'N/A'),
                 'package': dep.get('fileName', 'N/A'),
                 'severity': vuln.get('severity', 'UNKNOWN'),
-                'description': vuln.get('description', '')[:500],
+                'description': smart_truncate(vuln.get('description', ''), 500),
                 'cvss_score': vuln.get('cvssv3', {}).get('baseScore', 0),
             })
     return findings
@@ -91,11 +108,13 @@ def parse_sonarqube_from_unified(unified_report):
     issues = sonar.get('issues', [])
 
     for issue in issues:
+        # Sanitize rule id (e.g. "javascript:S2068" -> "javascript-S2068")
+        rule = str(issue.get('rule', 'N/A')).replace(':', '-')
         findings.append({
             'scanner': 'SonarQube',
-            'cve_id': f"SONAR-{issue.get('rule', 'N/A')}",
+            'cve_id': f"SONAR-{rule}",
             'severity': issue.get('severity', 'UNKNOWN'),
-            'description': issue.get('message', '')[:500],
+            'description': smart_truncate(issue.get('message', ''), 500),
             'component': issue.get('component', 'N/A'),
             'line': issue.get('line', 'N/A'),
             'type': issue.get('type', 'N/A'),
@@ -103,48 +122,87 @@ def parse_sonarqube_from_unified(unified_report):
     return findings
 
 
+def make_zap_id(plugin_id, alert_name):
+    """Build a unique, filename-safe ZAP cve_id from plugin id + alert name."""
+    slug = re.sub(r'[^a-zA-Z0-9]+', '-', str(alert_name))[:30].strip('-')
+    if not slug:
+        slug = 'unknown'
+    return f"ZAP-{plugin_id}-{slug}"
+
+
 def parse_zap_html(filepath):
-    """Extract ZAP findings from zap-report.html using regex parsing"""
-    import re
+    """Extract ZAP findings from zap-report.html (fallback if JSON not available)"""
     findings = []
 
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
-        print(f'  [WARN] ZAP report not found: {filepath}')
+        print(f'  [WARN] ZAP HTML report not found: {filepath}')
         return findings
 
-    # Find alerts table
-    section = content[content.find('class="alerts"'):]
+    # Locate alerts table - bail out if not found instead of slicing on -1
+    idx = content.find('class="alerts"')
+    if idx == -1:
+        print('  [WARN] ZAP HTML format unrecognized (no alerts table found)')
+        return findings
+
+    section = content[idx:]
     rows = re.findall(r'<tr[^>]*>(.*?)</tr>', section[:5000], re.DOTALL)
 
     for row in rows:
         tds = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
         cleaned = [re.sub(r'<[^>]+>', '', td).strip() for td in tds]
         if len(cleaned) >= 2 and cleaned[1] in ['High', 'Medium', 'Low', 'Informational']:
+            alert_name = cleaned[0]
             findings.append({
                 'scanner': 'ZAP',
-                'cve_id': f"ZAP-{cleaned[0].replace(' ', '-')[:40]}",
-                'alert_name': cleaned[0],
+                'cve_id': make_zap_id('HTML', alert_name),
+                'alert_name': alert_name,
                 'severity': cleaned[1].upper(),
-                'description': f"DAST finding: {cleaned[0]}",
+                'description': f"DAST finding: {alert_name}",
                 'instances': cleaned[2] if len(cleaned) > 2 else '1',
             })
 
-    # Also try to get solutions from detail section
-    detail_section = content[content.find('Alert Detail'):]
-    solutions = re.findall(r'Solution.*?<td[^>]*>(.*?)</td>', detail_section, re.DOTALL)
-    for i, sol in enumerate(solutions):
-        clean_sol = re.sub(r'<[^>]+>', '', sol).strip()[:300]
-        if i < len(findings) and clean_sol:
-            findings[i]['zap_solution'] = clean_sol
+    # Try to enrich with solution text from the detail section
+    detail_idx = content.find('Alert Detail')
+    if detail_idx != -1:
+        detail_section = content[detail_idx:]
+        solutions = re.findall(r'Solution.*?<td[^>]*>(.*?)</td>', detail_section, re.DOTALL)
+        for i, sol in enumerate(solutions):
+            clean_sol = re.sub(r'<[^>]+>', '', sol).strip()[:300]
+            if i < len(findings) and clean_sol:
+                findings[i]['zap_solution'] = clean_sol
 
     return findings
 
 
+def normalize_zap_severity(alert):
+    """ZAP uses many severity formats - normalize to CRITICAL/HIGH/MEDIUM/LOW/INFORMATIONAL."""
+    # Try riskdesc first ("Medium (Medium)", "Informational (Low)" etc.)
+    riskdesc = alert.get('riskdesc', '')
+    if riskdesc:
+        sev = riskdesc.split(' ')[0].upper()
+        if sev in ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFORMATIONAL'):
+            return sev
+
+    # Fall back to numeric risk code
+    risk_map = {
+        '0': 'INFORMATIONAL',
+        '1': 'LOW',
+        '2': 'MEDIUM',
+        '3': 'HIGH',
+        '4': 'CRITICAL',
+    }
+    risk = str(alert.get('risk', alert.get('riskcode', '')))
+    if risk in risk_map:
+        return risk_map[risk]
+
+    return 'UNKNOWN'
+
+
 def parse_zap_json(filepath):
-    """Extract ZAP findings from zap-report.json (if available)"""
+    """Extract ZAP findings from zap-report.json (preferred over HTML)"""
     findings = []
     report = load_json(filepath)
     if not report:
@@ -152,12 +210,14 @@ def parse_zap_json(filepath):
 
     for site in report.get('site', []):
         for alert in site.get('alerts', []):
+            plugin_id = alert.get('pluginid', 'N/A')
+            alert_name = alert.get('name', alert.get('alert', 'Unknown'))
             findings.append({
                 'scanner': 'ZAP',
-                'cve_id': f"ZAP-{alert.get('pluginid', 'N/A')}",
-                'alert_name': alert.get('name', alert.get('alert', 'Unknown')),
-                'severity': alert.get('riskdesc', 'UNKNOWN').split(' ')[0].upper(),
-                'description': alert.get('desc', '')[:500],
+                'cve_id': make_zap_id(plugin_id, alert_name),
+                'alert_name': alert_name,
+                'severity': normalize_zap_severity(alert),
+                'description': smart_truncate(alert.get('desc', ''), 500),
                 'solution': alert.get('solution', ''),
                 'instances': str(len(alert.get('instances', []))),
             })
@@ -167,27 +227,28 @@ def parse_zap_json(filepath):
 def get_ai_remediation(finding):
     """Send a vulnerability finding to the AI endpoint and get fix suggestion."""
     try:
-        # Build a rich description for the AI
+        # Build a rich, length-controlled description for the AI
         description_parts = []
         if finding.get('title'):
-            description_parts.append(finding['title'])
+            description_parts.append(smart_truncate(finding['title'], 200))
         if finding.get('description'):
-            description_parts.append(finding['description'])
-        if finding.get('alert_name'):
+            description_parts.append(smart_truncate(finding['description'], 400))
+        if finding.get('alert_name') and finding.get('alert_name') not in description_parts:
             description_parts.append(finding['alert_name'])
 
-        description = '. '.join(description_parts)[:600]
+        description = smart_truncate('. '.join(description_parts), 600)
 
-        # Build vulnerable code context
-        code_context = ''
+        # Build vulnerable code context (accumulate, don't overwrite)
+        context_bits = []
         if finding.get('package') and finding.get('installed_version'):
-            code_context = f"Package: {finding['package']}@{finding['installed_version']}"
-        if finding.get('fixed_version') and finding['fixed_version'] != 'No fix available':
-            code_context += f" -> Fix available: {finding['fixed_version']}"
+            context_bits.append(f"Package: {finding['package']}@{finding['installed_version']}")
+        if finding.get('fixed_version') and finding['fixed_version'] not in ('No fix available', 'N/A', ''):
+            context_bits.append(f"Fix available: {finding['fixed_version']}")
         if finding.get('component'):
-            code_context += f" File: {finding['component']}"
+            context_bits.append(f"File: {finding['component']}")
         if finding.get('alert_name'):
-            code_context = f"DAST Alert: {finding['alert_name']}"
+            context_bits.append(f"DAST Alert: {finding['alert_name']}")
+        code_context = ' | '.join(context_bits)
 
         payload = {
             'cve_id': finding.get('cve_id', ''),
@@ -204,7 +265,11 @@ def get_ai_remediation(finding):
         )
 
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+            # Mark as success if endpoint didn't already set a status
+            if 'status' not in result:
+                result['status'] = 'success'
+            return result
         else:
             return {
                 'status': 'error',
@@ -278,7 +343,7 @@ def main():
                         'fixed_version': v.get('FixedVersion', 'N/A'),
                         'severity': v.get('Severity', ''),
                         'title': v.get('Title', ''),
-                        'description': v.get('Description', '')[:500],
+                        'description': smart_truncate(v.get('Description', ''), 500),
                     })
             print(f'\n  [Trivy]     Vulnerabilities found: {len(trivy_findings)}')
             all_findings.extend(trivy_findings)
@@ -298,6 +363,9 @@ def main():
             'pipeline': unified.get('pipeline', {}) if unified else {},
             'total_findings': 0,
             'processed': 0,
+            'success': 0,
+            'failed': 0,
+            'truncated': False,
             'ai_endpoint': AI_ENDPOINT,
             'scanners': {'trivy': [], 'owasp_dc': [], 'sonarqube': [], 'zap': []},
             'results': []
@@ -310,9 +378,14 @@ def main():
     severity_order = {'CRITICAL': 0, 'HIGH': 1, 'MEDIUM': 2, 'LOW': 3, 'INFORMATIONAL': 4, 'UNKNOWN': 5}
     all_findings.sort(key=lambda x: severity_order.get(x.get('severity', 'UNKNOWN').upper(), 5))
 
-    # Process top 25 findings (to keep demo time reasonable)
-    process_findings = all_findings[:25]
-    print(f'  Processing top {len(process_findings)} findings...\n')
+    # Process top N findings (to keep demo time reasonable)
+    process_findings = all_findings[:MAX_FINDINGS_TO_PROCESS]
+    truncated = len(all_findings) > MAX_FINDINGS_TO_PROCESS
+    if truncated:
+        print(f'  Processing top {MAX_FINDINGS_TO_PROCESS} of {len(all_findings)} findings '
+              f'(sorted by severity)...\n')
+    else:
+        print(f'  Processing all {len(process_findings)} findings...\n')
 
     # ---- SEND TO AI ----
     results = []
@@ -333,12 +406,11 @@ def main():
             'ai_suggestion': ai_result
         })
 
-        if ai_result.get('status') == 'success':
-            success_count += 1
-        else:
+        # Count as failure ONLY if status is explicitly error/timeout
+        if ai_result.get('status') in ('error', 'timeout'):
             fail_count += 1
-
-        time.sleep(0.5)  # Be nice to the API
+        else:
+            success_count += 1
 
     # ---- ORGANIZE BY SCANNER ----
     scanner_results = {'trivy': [], 'owasp_dc': [], 'sonarqube': [], 'zap': []}
@@ -360,6 +432,8 @@ def main():
         'processed': len(results),
         'success': success_count,
         'failed': fail_count,
+        'truncated': truncated,
+        'max_processed': MAX_FINDINGS_TO_PROCESS,
         'ai_endpoint': AI_ENDPOINT,
         'scanners': scanner_results,
         'results': results
@@ -372,7 +446,8 @@ def main():
     print(f'\n{"=" * 60}')
     print(f'  REMEDIATION COMPLETE')
     print(f'  Total findings:  {len(all_findings)}')
-    print(f'  Processed:       {len(results)}')
+    print(f'  Processed:       {len(results)}'
+          f'{" (truncated)" if truncated else ""}')
     print(f'  AI Success:      {success_count}')
     print(f'  AI Failed:       {fail_count}')
     print(f'  Results saved:   ai-remediation-results.json')
